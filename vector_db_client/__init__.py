@@ -8,6 +8,8 @@ from .models import (
     SearchResult,
     UpsertResult,
     DistanceMetric,
+    ApiKeyInfo,
+    CreateKeyResponse,
 )
 from .exceptions import (
     VectorDBError,
@@ -27,6 +29,8 @@ __all__ = [
     "SearchResult",
     "UpsertResult",
     "DistanceMetric",
+    "ApiKeyInfo",
+    "CreateKeyResponse",
     "VectorDBError",
     "CollectionNotFoundError",
     "CollectionAlreadyExistsError",

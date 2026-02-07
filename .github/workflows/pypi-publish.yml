@@ -1,0 +1,44 @@
+# Publica o pacote ferres-db-python no PyPI.
+# Configurar no repositório: Settings > Secrets and variables > Actions > PYPI_API_TOKEN
+# (token do PyPI com permissão de upload em https://pypi.org/manage/account/token/).
+# Disparos: ao criar um Release ou ao dar push em uma tag v* (ex.: v0.1.0).
+# A versão em pyproject.toml deve coincidir com a tag (ex.: tag v0.1.0 -> version = "0.1.0").
+
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Run tests
+        run: |
+          pip install -e ".[dev]"
+          pytest tests/ -v
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}

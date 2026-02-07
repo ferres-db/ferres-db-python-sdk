@@ -13,6 +13,8 @@ from vector_db_client import (
     SearchResult,
     UpsertResult,
     DistanceMetric,
+    ApiKeyInfo,
+    CreateKeyResponse,
     CollectionNotFoundError,
     CollectionAlreadyExistsError,
     InvalidDimensionError,
@@ -82,6 +84,118 @@ async def test_create_collection_success(client, mock_response):
             "dimension": 128,
             "distance": "Cosine",
         }
+
+
+@pytest.mark.asyncio
+async def test_create_collection_with_bm25_options(client, mock_response):
+    """Test collection creation with enable_bm25 and bm25_text_field."""
+    response_data = {
+        "name": "docs",
+        "dimension": 384,
+        "distance": "Cosine",
+        "created_at": 1234567890,
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(201, response_data)
+        await client.create_collection(
+            name="docs",
+            dimension=384,
+            distance=DistanceMetric.COSINE,
+            enable_bm25=True,
+            bm25_text_field="content",
+        )
+        call_args = mock_request.call_args
+        assert call_args.kwargs["json"] == {
+            "name": "docs",
+            "dimension": 384,
+            "distance": "Cosine",
+            "enable_bm25": True,
+            "bm25_text_field": "content",
+        }
+
+
+def test_client_with_api_key_sets_authorization_header():
+    """Test that client with api_key sets Authorization header."""
+    c = VectorDBClient(
+        base_url="http://localhost:8080",
+        api_key="ferres_sk_test123",
+    )
+    assert c.client.headers.get("Authorization") == "Bearer ferres_sk_test123"
+
+
+def test_client_without_api_key_has_no_authorization_header():
+    """Test that client without api_key has no Authorization header."""
+    c = VectorDBClient(base_url="http://localhost:8080")
+    assert "Authorization" not in (c.client.headers or {})
+
+
+@pytest.mark.asyncio
+async def test_list_keys(client, mock_response):
+    """Test listing API keys."""
+    response_data = [
+        {"id": 1, "name": "key1", "key_prefix": "ferres_sk_ab", "created_at": 1000},
+        {"id": 2, "name": "key2", "key_prefix": "ferres_sk_cd", "created_at": 2000},
+    ]
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+        keys = await client.list_keys()
+        assert len(keys) == 2
+        assert keys[0].id == 1 and keys[0].name == "key1"
+        assert keys[1].id == 2 and keys[1].name == "key2"
+        call_args = mock_request.call_args
+        assert call_args.kwargs["method"] == "GET"
+        assert "/api/v1/keys" in call_args.kwargs["url"]
+
+
+@pytest.mark.asyncio
+async def test_create_key(client, mock_response):
+    """Test creating an API key."""
+    response_data = {
+        "id": 1,
+        "name": "my-key",
+        "key": "ferres_sk_raw_once",
+        "key_prefix": "ferres_sk_ra",
+        "created_at": 1234567890,
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+        result = await client.create_key("my-key")
+        assert result.id == 1
+        assert result.name == "my-key"
+        assert result.key == "ferres_sk_raw_once"
+        call_args = mock_request.call_args
+        assert call_args.kwargs["method"] == "POST"
+        assert call_args.kwargs["json"] == {"name": "my-key"}
+
+
+@pytest.mark.asyncio
+async def test_create_key_trims_name(client, mock_response):
+    """Test that create_key trims the name."""
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, {"id": 1, "name": "x", "key": "k", "key_prefix": "p", "created_at": 0})
+        await client.create_key("  trimmed  ")
+        call_args = mock_request.call_args
+        assert call_args.kwargs["json"] == {"name": "trimmed"}
+
+
+@pytest.mark.asyncio
+async def test_create_key_empty_name_raises(client):
+    """Test that create_key with empty name raises InvalidPayloadError."""
+    with pytest.raises(InvalidPayloadError):
+        await client.create_key("")
+    with pytest.raises(InvalidPayloadError):
+        await client.create_key("   ")
+
+
+@pytest.mark.asyncio
+async def test_delete_key(client, mock_response):
+    """Test deleting an API key."""
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200)
+        await client.delete_key(42)
+        call_args = mock_request.call_args
+        assert call_args.kwargs["method"] == "DELETE"
+        assert "/api/v1/keys/42" in call_args.kwargs["url"]
 
 
 @pytest.mark.asyncio

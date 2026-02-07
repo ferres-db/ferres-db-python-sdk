@@ -26,6 +26,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
+[project.urls]
+Repository = "https://github.com/ferres-db/ferres-db-python-sdk"
+
 dependencies = [
     "httpx>=0.24.0",
     "structlog>=23.0.0",

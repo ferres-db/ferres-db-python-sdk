@@ -16,6 +16,8 @@ from .models import (
     SearchResult,
     UpsertResult,
     DistanceMetric,
+    ApiKeyInfo,
+    CreateKeyResponse,
 )
 from .exceptions import (
     VectorDBError,
@@ -37,19 +39,31 @@ class VectorDBClient:
     # Maximum batch size for upsert operations
     MAX_BATCH_SIZE = 1000
     
-    def __init__(self, base_url: str, timeout: int = 30):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: Optional[str] = None,
+        timeout: int = 30,
+    ):
         """
         Initialize the VectorDB client.
-        
+
         Args:
-            base_url: Base URL of the FerresDB server (e.g., "http://localhost:3000")
+            base_url: Base URL of the FerresDB server (e.g., "http://localhost:8080")
+            api_key: Optional API key for authentication (Authorization: Bearer <key>).
+                     Required for all data routes (collections, points, keys).
             timeout: Request timeout in seconds (default: 30)
         """
         self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
         self.timeout = timeout
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
+            headers=headers,
         )
         self.logger = logger.bind(client="VectorDBClient")
     
@@ -206,32 +220,40 @@ class VectorDBClient:
         name: str,
         dimension: int,
         distance: DistanceMetric,
+        enable_bm25: Optional[bool] = None,
+        bm25_text_field: Optional[str] = None,
     ) -> Collection:
         """
         Create a new collection.
-        
+
         Args:
             name: Collection name (alphanumeric, hyphens, underscores only)
             dimension: Vector dimension (1-4096)
             distance: Distance metric to use
-        
+            enable_bm25: Optional; enable BM25 index for hybrid search (default: False)
+            bm25_text_field: Optional; metadata key used as text for BM25 (default: "text")
+
         Returns:
             Created collection
-        
+
         Raises:
             CollectionAlreadyExistsError: If collection already exists
             InvalidDimensionError: If dimension is invalid
             InvalidPayloadError: If payload is invalid
         """
-        payload = {
+        payload: Dict[str, Any] = {
             "name": name,
             "dimension": dimension,
             "distance": distance.value,
         }
-        
+        if enable_bm25 is not None:
+            payload["enable_bm25"] = enable_bm25
+        if bm25_text_field is not None:
+            payload["bm25_text_field"] = bm25_text_field
+
         response = await self._request("POST", "/api/v1/collections", json_data=payload)
         data = await response.json()
-        
+
         return Collection(
             name=data["name"],
             dimension=data["dimension"],
@@ -394,3 +416,45 @@ class VectorDBClient:
             SearchResult.from_dict(result)
             for result in data["results"]
         ]
+
+    async def list_keys(self) -> List[ApiKeyInfo]:
+        """
+        List API keys (metadata only; requires valid API key with Editor/Admin role).
+
+        Returns:
+            List of API key info (id, name, key_prefix, created_at).
+        """
+        response = await self._request("GET", "/api/v1/keys")
+        data = await response.json()
+        return [ApiKeyInfo.from_dict(item) for item in data]
+
+    async def create_key(self, name: str) -> CreateKeyResponse:
+        """
+        Create a new API key. The raw key is returned only once; store it securely.
+
+        Args:
+            name: Display name for the key (trimmed).
+
+        Returns:
+            CreateKeyResponse including the raw `key` (only time it is returned).
+
+        Raises:
+            InvalidPayloadError: If name is empty after trimming.
+        """
+        trimmed = name.strip()
+        if not trimmed:
+            raise InvalidPayloadError("name is required")
+        response = await self._request(
+            "POST", "/api/v1/keys", json_data={"name": trimmed}
+        )
+        data = await response.json()
+        return CreateKeyResponse.from_dict(data)
+
+    async def delete_key(self, key_id: int) -> None:
+        """
+        Delete an API key by id.
+
+        Args:
+            key_id: Numeric id of the key (from list_keys or create_key).
+        """
+        await self._request("DELETE", f"/api/v1/keys/{key_id}")

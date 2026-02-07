@@ -99,14 +99,56 @@ class SearchResult:
 @dataclass
 class UpsertResult:
     """Result of an upsert operation."""
-    
+
     upserted: int
     failed: List[Dict[str, str]]
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> "UpsertResult":
         """Create an UpsertResult from a dictionary."""
         return cls(
             upserted=data["upserted"],
             failed=data.get("failed", []),
+        )
+
+
+@dataclass
+class ApiKeyInfo:
+    """API key metadata (without the raw key value)."""
+
+    id: int
+    name: str
+    key_prefix: str
+    created_at: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ApiKeyInfo":
+        """Create an ApiKeyInfo from a dictionary."""
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            key_prefix=data["key_prefix"],
+            created_at=data["created_at"],
+        )
+
+
+@dataclass
+class CreateKeyResponse:
+    """Response when creating an API key (includes raw key once)."""
+
+    id: int
+    name: str
+    key: str
+    key_prefix: str
+    created_at: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CreateKeyResponse":
+        """Create a CreateKeyResponse from a dictionary."""
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            key=data["key"],
+            key_prefix=data["key_prefix"],
+            created_at=data["created_at"],
         )

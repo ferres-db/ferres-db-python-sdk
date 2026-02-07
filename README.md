@@ -15,6 +15,72 @@ cd sdk/python
 pip install -e .
 ```
 
+## Authentication
+
+All data routes (collections, points, search, API keys) require authentication. Pass the **API key** when creating the client; the SDK sends the `Authorization: Bearer <api_key>` header on every request.
+
+```python
+client = VectorDBClient(
+    base_url="http://localhost:8080",
+    api_key="ferres_sk_...",  # required for protected routes
+)
+```
+
+Without `api_key`, the server will respond with 401 on protected routes.
+
+## Running FerresDB with Docker
+
+To use the SDK against a real FerresDB instance, you can run the official images.
+
+### Pull images
+
+```bash
+docker pull ferresdb/ferres-db-core
+docker pull ferresdb/ferres-db-frontend
+```
+
+### Start the backend (API)
+
+```bash
+docker run -d \
+  --name ferres-db-core \
+  -p 8080:8080 \
+  -e PORT=8080 \
+  -e STORAGE_PATH=/data \
+  -e FERRESDB_API_KEYS=ferres_sk_your_key_here \
+  -v ferres-data:/data \
+  ferresdb/ferres-db-core
+```
+
+- **API:** http://localhost:8080
+
+### Start the frontend (dashboard)
+
+```bash
+docker run -d \
+  --name ferres-db-frontend \
+  -p 3000:80 \
+  -e VITE_API_BASE_URL=http://localhost:8080 \
+  -e VITE_API_KEY=ferres_sk_your_key_here \
+  ferresdb/ferres-db-frontend
+```
+
+- **Dashboard:** http://localhost:3000
+
+### Use the SDK
+
+With the backend running at `http://localhost:8080` and the same API key:
+
+```python
+from vector_db_client import VectorDBClient
+
+client = VectorDBClient(
+    base_url="http://localhost:8080",
+    api_key="ferres_sk_your_key_here",
+)
+# create collections, upsert, search, etc.
+```
+
 ## Quick Start
 
 ```python
@@ -22,8 +88,11 @@ import asyncio
 from vector_db_client import VectorDBClient, Point, DistanceMetric
 
 async def main():
-    # Create client
-    async with VectorDBClient(base_url="http://localhost:3000") as client:
+    # Create client (api_key required for collections, points, etc.)
+    async with VectorDBClient(
+        base_url="http://localhost:8080",
+        api_key="ferres_sk_...",
+    ) as client:
         # Create a collection
         collection = await client.create_collection(
             name="my-collection",
@@ -63,20 +132,33 @@ asyncio.run(main())
 
 ### VectorDBClient
 
-#### `__init__(base_url: str, timeout: int = 30)`
+#### `__init__(base_url: str, api_key: str = None, timeout: int = 30)`
 
 Initialize the client.
 
-- `base_url`: Base URL of the FerresDB server (e.g., "http://localhost:3000")
+- `base_url`: Base URL of the FerresDB server (e.g., "http://localhost:8080")
+- `api_key`: Optional API key for authentication (recommended for all data routes)
 - `timeout`: Request timeout in seconds
 
-#### `create_collection(name: str, dimension: int, distance: DistanceMetric) -> Collection`
+#### `create_collection(name: str, dimension: int, distance: DistanceMetric, enable_bm25: bool = None, bm25_text_field: str = None) -> Collection`
 
-Create a new collection.
+Create a new collection. Use `enable_bm25=True` and `bm25_text_field="content"` for hybrid search.
 
 #### `list_collections() -> List[CollectionListItem]`
 
 List all collections.
+
+#### `list_keys() -> List[ApiKeyInfo]`
+
+List API keys (metadata only; requires Editor/Admin). Returns `id`, `name`, `key_prefix`, `created_at`.
+
+#### `create_key(name: str) -> CreateKeyResponse`
+
+Create a new API key. The raw `key` is returned only once; store it securely.
+
+#### `delete_key(key_id: int) -> None`
+
+Delete an API key by id (from `list_keys` or `create_key`).
 
 #### `delete_collection(name: str) -> None`
 
@@ -113,6 +195,17 @@ Search for similar vectors.
 - `id: str`: Point ID
 - `score: float`: Similarity score
 - `metadata: Dict[str, Any]`: Point metadata
+
+### ApiKeyInfo
+
+- `id: int`: Key id
+- `name: str`: Display name
+- `key_prefix: str`: Prefix (raw key never returned in list)
+- `created_at: int`: Unix timestamp
+
+### CreateKeyResponse
+
+- `id: int`, `name: str`, `key: str`, `key_prefix: str`, `created_at: int` — `key` is the raw secret (returned only on create).
 
 ## Exceptions
 
