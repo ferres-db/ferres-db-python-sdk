@@ -10,9 +10,18 @@ from vector_db_client import (
     Point,
     Collection,
     CollectionListItem,
+    CollectionDetail,
+    CollectionStats,
+    PointDetail,
+    ListPointsResult,
     SearchResult,
+    SearchResponse,
     UpsertResult,
+    DeletePointsResult,
     DistanceMetric,
+    QuantizationConfig,
+    ScalarType,
+    ScalarQuantizationConfig,
     ApiKeyInfo,
     CreateKeyResponse,
     EstimateSearchResponse,
@@ -385,14 +394,16 @@ async def test_upsert_points_with_failures(client, mock_response):
 
 @pytest.mark.asyncio
 async def test_delete_points(client, mock_response):
-    """Test deleting points."""
+    """Test deleting points returns deleted count."""
     ids = ["1", "2", "3"]
     
     with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
-        mock_request.return_value = mock_response(200)
+        mock_request.return_value = mock_response(200, {"deleted": 3})
         
-        await client.delete_points("test-collection", ids)
+        result = await client.delete_points("test-collection", ids)
         
+        assert isinstance(result, DeletePointsResult)
+        assert result.deleted == 3
         call_args = mock_request.call_args
         assert call_args.kwargs["json"] == {"ids": ids}
 
@@ -428,16 +439,18 @@ async def test_search(client, mock_response):
     with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
         mock_request.return_value = mock_response(200, response_data)
         
-        results = await client.search(
+        resp = await client.search(
             collection="test-collection",
             vector=[0.1, 0.2, 0.3],
             limit=10,
         )
         
-        assert len(results) == 2
-        assert results[0].id == "1"
-        assert results[0].score == 0.95
-        assert results[0].metadata == {"text": "hello"}
+        assert isinstance(resp, SearchResponse)
+        assert len(resp.results) == 2
+        assert resp.results[0].id == "1"
+        assert resp.results[0].score == 0.95
+        assert resp.results[0].metadata == {"text": "hello"}
+        assert resp.took_ms == 10
         
         # Verify request payload
         call_args = mock_request.call_args
@@ -462,14 +475,14 @@ async def test_search_with_filter(client, mock_response):
     with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
         mock_request.return_value = mock_response(200, response_data)
         
-        results = await client.search(
+        resp = await client.search(
             collection="test-collection",
             vector=[0.1, 0.2, 0.3],
             limit=10,
             filter={"category": "A"},
         )
         
-        assert len(results) == 1
+        assert len(resp.results) == 1
         
         # Verify filter was included in request
         call_args = mock_request.call_args
@@ -576,14 +589,14 @@ async def test_search_with_budget_ms(client, mock_response):
     with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
         mock_request.return_value = mock_response(200, response_data)
 
-        results = await client.search(
+        resp = await client.search(
             collection="test-collection",
             vector=[0.1, 0.2, 0.3],
             limit=10,
             budget_ms=50,
         )
 
-        assert len(results) == 1
+        assert len(resp.results) == 1
         call_args = mock_request.call_args
         assert call_args.kwargs["json"]["budget_ms"] == 50
 
@@ -897,3 +910,253 @@ async def test_search_explain_collection_not_found(client, mock_response):
                 vector=[0.1, 0.2],
                 limit=5,
             )
+
+
+# ─── Create Collection with Quantization ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_collection_with_quantization(client, mock_response):
+    """Test collection creation with SQ8 quantization."""
+    response_data = {
+        "name": "quantized",
+        "dimension": 384,
+        "distance": "Cosine",
+        "created_at": 1234567890,
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(201, response_data)
+        await client.create_collection(
+            name="quantized",
+            dimension=384,
+            distance=DistanceMetric.COSINE,
+            quantization=QuantizationConfig.scalar_int8(always_ram=True, quantile=95.0),
+        )
+        call_args = mock_request.call_args
+        payload = call_args.kwargs["json"]
+        assert payload["quantization"] == {
+            "Scalar": {"dtype": "Int8", "always_ram": True, "quantile": 95.0}
+        }
+
+
+@pytest.mark.asyncio
+async def test_create_collection_with_quantization_minimal(client, mock_response):
+    """Test collection creation with minimal SQ8 config (only dtype)."""
+    response_data = {
+        "name": "q-min",
+        "dimension": 128,
+        "distance": "Euclidean",
+        "created_at": 1234567890,
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(201, response_data)
+        await client.create_collection(
+            name="q-min",
+            dimension=128,
+            distance=DistanceMetric.EUCLIDEAN,
+            quantization=QuantizationConfig.scalar_int8(),
+        )
+        call_args = mock_request.call_args
+        payload = call_args.kwargs["json"]
+        # always_ram=False and quantile=99.5 are defaults, should be omitted
+        assert payload["quantization"] == {"Scalar": {"dtype": "Int8"}}
+
+
+@pytest.mark.asyncio
+async def test_create_collection_without_quantization_omits_field(client, mock_response):
+    """Test that quantization field is omitted when not provided."""
+    response_data = {
+        "name": "plain",
+        "dimension": 128,
+        "distance": "Cosine",
+        "created_at": 1234567890,
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(201, response_data)
+        await client.create_collection(
+            name="plain",
+            dimension=128,
+            distance=DistanceMetric.COSINE,
+        )
+        call_args = mock_request.call_args
+        assert "quantization" not in call_args.kwargs["json"]
+
+
+# ─── Get Collection ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_collection(client, mock_response):
+    """Test getting a single collection's details."""
+    response_data = {
+        "name": "my-col",
+        "dimension": 128,
+        "num_points": 5000,
+        "last_updated": 1700000000,
+        "distance": "Cosine",
+        "stats": {"index_size_bytes": 1048576},
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        detail = await client.get_collection("my-col")
+
+        assert isinstance(detail, CollectionDetail)
+        assert detail.name == "my-col"
+        assert detail.dimension == 128
+        assert detail.num_points == 5000
+        assert detail.last_updated == 1700000000
+        assert detail.distance == DistanceMetric.COSINE
+        assert detail.stats.index_size_bytes == 1048576
+
+        call_args = mock_request.call_args
+        assert call_args.kwargs["method"] == "GET"
+        assert "/api/v1/collections/my-col" in call_args.kwargs["url"]
+
+
+# ─── List Collections with Distance ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_collections_includes_distance(client, mock_response):
+    """Test that list_collections parses the distance field."""
+    response_data = {
+        "collections": [
+            {
+                "name": "c1",
+                "dimension": 128,
+                "num_points": 10,
+                "created_at": 1234567890,
+                "distance": "Euclidean",
+            },
+        ]
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        collections = await client.list_collections()
+
+        assert collections[0].distance == DistanceMetric.EUCLIDEAN
+
+
+# ─── Get Point ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_point(client, mock_response):
+    """Test getting a single point by ID."""
+    response_data = {
+        "id": "doc-42",
+        "vector": [0.1, 0.2, 0.3],
+        "metadata": {"text": "hello world"},
+        "created_at": 1700000000,
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        point = await client.get_point("my-col", "doc-42")
+
+        assert isinstance(point, PointDetail)
+        assert point.id == "doc-42"
+        assert point.vector == [0.1, 0.2, 0.3]
+        assert point.metadata == {"text": "hello world"}
+        assert point.created_at == 1700000000
+
+        call_args = mock_request.call_args
+        assert "/api/v1/collections/my-col/points/doc-42" in call_args.kwargs["url"]
+
+
+# ─── List Points ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_points(client, mock_response):
+    """Test listing points with pagination."""
+    response_data = {
+        "points": [
+            {"id": "p1", "vector": [0.1], "metadata": {}, "created_at": 1000},
+            {"id": "p2", "vector": [0.2], "metadata": {}, "created_at": 2000},
+        ],
+        "total": 50,
+        "limit": 2,
+        "offset": 0,
+        "has_more": True,
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        result = await client.list_points("my-col", limit=2, offset=0)
+
+        assert isinstance(result, ListPointsResult)
+        assert len(result.points) == 2
+        assert result.total == 50
+        assert result.has_more is True
+        assert result.points[0].id == "p1"
+
+        call_args = mock_request.call_args
+        assert "limit=2" in call_args.kwargs["url"]
+        assert "offset=0" in call_args.kwargs["url"]
+
+
+# ─── Hybrid Search ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search(client, mock_response):
+    """Test hybrid search combining BM25 and vector similarity."""
+    response_data = {
+        "results": [
+            {"id": "doc-1", "score": 0.92, "metadata": {"text": "hello"}},
+        ],
+        "took_ms": 8,
+        "query_id": "q-abc",
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        resp = await client.hybrid_search(
+            collection="docs",
+            query_text="hello world",
+            query_vector=[0.1, 0.2, 0.3],
+            limit=5,
+            alpha=0.7,
+        )
+
+        assert isinstance(resp, SearchResponse)
+        assert len(resp.results) == 1
+        assert resp.took_ms == 8
+        assert resp.query_id == "q-abc"
+
+        call_args = mock_request.call_args
+        payload = call_args.kwargs["json"]
+        assert payload["query_text"] == "hello world"
+        assert payload["query_vector"] == [0.1, 0.2, 0.3]
+        assert payload["limit"] == 5
+        assert payload["alpha"] == 0.7
+        assert "/search/hybrid" in call_args.kwargs["url"]
+
+
+# ─── Search with query_id ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_search_returns_query_id(client, mock_response):
+    """Test that search response includes optional query_id."""
+    response_data = {
+        "results": [
+            {"id": "1", "score": 0.9, "metadata": {}},
+        ],
+        "took_ms": 5,
+        "query_id": "qid-12345",
+    }
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        resp = await client.search(
+            collection="test",
+            vector=[0.1, 0.2],
+            limit=1,
+        )
+
+        assert resp.query_id == "qid-12345"
+        assert resp.took_ms == 5
