@@ -110,6 +110,86 @@ class QuantizationConfig:
         return cls.none()
 
 
+# ─── Tiered Storage ────────────────────────────────────────────────────────
+
+
+@dataclass
+class TieredStorageConfig:
+    """Configuration for tiered storage.
+
+    When enabled, points are automatically moved between storage tiers
+    (Hot/Warm/Cold) based on access frequency.
+
+    Attributes:
+        enabled: Enable tiered storage (default: False).
+        hot_threshold_hours: Points accessed within this many hours stay in Hot (RAM).
+            Default: 24.
+        warm_threshold_hours: Points accessed within this many hours stay in Warm (mmap).
+            Default: 168 (7 days).
+        compaction_interval_secs: Interval between automatic compaction runs (seconds).
+            Default: 3600 (1 hour).
+    """
+
+    enabled: bool = False
+    hot_threshold_hours: int = 24
+    warm_threshold_hours: int = 168
+    compaction_interval_secs: int = 3600
+
+    def to_dict(self) -> dict:
+        """Serialize to the server's JSON format."""
+        d: Dict[str, Any] = {"enabled": self.enabled}
+        if self.hot_threshold_hours != 24:
+            d["hot_threshold_hours"] = self.hot_threshold_hours
+        if self.warm_threshold_hours != 168:
+            d["warm_threshold_hours"] = self.warm_threshold_hours
+        if self.compaction_interval_secs != 3600:
+            d["compaction_interval_secs"] = self.compaction_interval_secs
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TieredStorageConfig":
+        """Create from a dictionary."""
+        return cls(
+            enabled=data.get("enabled", False),
+            hot_threshold_hours=data.get("hot_threshold_hours", 24),
+            warm_threshold_hours=data.get("warm_threshold_hours", 168),
+            compaction_interval_secs=data.get("compaction_interval_secs", 3600),
+        )
+
+
+@dataclass
+class TierDistribution:
+    """Distribution of points across storage tiers.
+
+    Attributes:
+        hot: Number of points in the Hot tier (RAM).
+        warm: Number of points in the Warm tier (mmap).
+        cold: Number of points in the Cold tier (disk).
+        hot_memory_bytes: Estimated memory usage for the Hot tier (bytes).
+        warm_memory_bytes: Estimated memory usage for the Warm tier (bytes).
+        cold_memory_bytes: Estimated memory usage for the Cold tier (bytes).
+    """
+
+    hot: int
+    warm: int
+    cold: int
+    hot_memory_bytes: int
+    warm_memory_bytes: int
+    cold_memory_bytes: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TierDistribution":
+        """Create from a dictionary."""
+        return cls(
+            hot=data["hot"],
+            warm=data["warm"],
+            cold=data["cold"],
+            hot_memory_bytes=data["hot_memory_bytes"],
+            warm_memory_bytes=data["warm_memory_bytes"],
+            cold_memory_bytes=data["cold_memory_bytes"],
+        )
+
+
 @dataclass
 class Point:
     """Represents a vector point with ID, vector, and metadata."""
@@ -576,6 +656,86 @@ class DeletePointsResult:
     @classmethod
     def from_dict(cls, data: dict) -> "DeletePointsResult":
         return cls(deleted=data["deleted"])
+
+
+# ─── Reindex ─────────────────────────────────────────────────────────────────
+
+
+class ReindexStatus(str, Enum):
+    """Status of a background reindex job."""
+
+    QUEUED = "Queued"
+    BUILDING = "Building"
+    SWAPPING = "Swapping"
+    COMPLETED = "Completed"
+    FAILED = "Failed"
+
+
+@dataclass
+class ReindexStats:
+    """Statistics about a reindex operation."""
+
+    points_processed: int
+    points_total: int
+    tombstones_cleaned: int
+    old_index_size_bytes: int
+    new_index_size_bytes: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReindexStats":
+        return cls(
+            points_processed=data["points_processed"],
+            points_total=data["points_total"],
+            tombstones_cleaned=data["tombstones_cleaned"],
+            old_index_size_bytes=data["old_index_size_bytes"],
+            new_index_size_bytes=data["new_index_size_bytes"],
+        )
+
+
+@dataclass
+class ReindexJob:
+    """A background reindex job."""
+
+    id: str
+    collection: str
+    status: ReindexStatus
+    progress: float
+    started_at: int
+    completed_at: Optional[int]
+    error: Optional[str]
+    stats: ReindexStats
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReindexJob":
+        return cls(
+            id=data["id"],
+            collection=data["collection"],
+            status=ReindexStatus(data["status"]),
+            progress=data["progress"],
+            started_at=data["started_at"],
+            completed_at=data.get("completed_at"),
+            error=data.get("error"),
+            stats=ReindexStats.from_dict(data["stats"]),
+        )
+
+
+@dataclass
+class StartReindexResponse:
+    """Response from starting a reindex job."""
+
+    job_id: str
+    collection: str
+    status: ReindexStatus
+    message: str
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StartReindexResponse":
+        return cls(
+            job_id=data["job_id"],
+            collection=data["collection"],
+            status=ReindexStatus(data["status"]),
+            message=data["message"],
+        )
 
 
 # ─── WebSocket Messages ───────────────────────────────────────────────────

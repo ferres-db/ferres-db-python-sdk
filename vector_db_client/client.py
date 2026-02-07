@@ -22,11 +22,15 @@ from .models import (
     DeletePointsResult,
     DistanceMetric,
     QuantizationConfig,
+    TieredStorageConfig,
+    TierDistribution,
     ApiKeyInfo,
     CreateKeyResponse,
     EstimateSearchResponse,
     QueryCostEstimate,
     SearchExplanation,
+    ReindexJob,
+    StartReindexResponse,
 )
 from .exceptions import (
     VectorDBError,
@@ -238,6 +242,7 @@ class VectorDBClient:
         enable_bm25: Optional[bool] = None,
         bm25_text_field: Optional[str] = None,
         quantization: Optional[QuantizationConfig] = None,
+        tiered_storage: Optional[TieredStorageConfig] = None,
     ) -> Collection:
         """
         Create a new collection.
@@ -250,6 +255,9 @@ class VectorDBClient:
             bm25_text_field: Optional; metadata key used as text for BM25 (default: "text")
             quantization: Optional; quantization config (use ``QuantizationConfig.scalar_int8()``
                 to enable SQ8 compression with ~4x memory savings)
+            tiered_storage: Optional; tiered storage config. When enabled, points are
+                automatically moved between Hot (RAM), Warm (mmap), and Cold (disk)
+                tiers based on access frequency.
 
         Returns:
             Created collection
@@ -270,6 +278,8 @@ class VectorDBClient:
             payload["bm25_text_field"] = bm25_text_field
         if quantization is not None:
             payload["quantization"] = quantization.to_dict()
+        if tiered_storage is not None:
+            payload["tiered_storage"] = tiered_storage.to_dict()
 
         response = await self._request("POST", "/api/v1/collections", json_data=payload)
         data = await response.json()
@@ -603,6 +613,8 @@ class VectorDBClient:
         query_vector: List[float],
         limit: int = 10,
         alpha: float = 0.5,
+        fusion: Optional[str] = None,
+        rrf_k: Optional[int] = None,
     ) -> SearchResponse:
         """
         Perform a hybrid search combining BM25 keyword matching and vector similarity.
@@ -615,7 +627,11 @@ class VectorDBClient:
             query_vector: Query vector for similarity search
             limit: Maximum number of results (default: 10)
             alpha: Weight for vector search score (0.0-1.0). ``1-alpha`` is used
-                for the BM25 keyword score. Default: 0.5.
+                for the BM25 keyword score. Default: 0.5. Used with ``fusion="weighted"``.
+            fusion: Fusion strategy — ``"weighted"`` (default) or ``"rrf"``
+                (Reciprocal Rank Fusion).
+            rrf_k: RRF constant k (default: 60). Only used when ``fusion="rrf"``.
+                Higher values smooth rank differences.
 
         Returns:
             SearchResponse with combined results, took_ms, and optional query_id.
@@ -630,6 +646,10 @@ class VectorDBClient:
             "limit": limit,
             "alpha": alpha,
         }
+        if fusion is not None:
+            payload["fusion"] = fusion
+        if rrf_k is not None:
+            payload["rrf_k"] = rrf_k
 
         response = await self._request(
             "POST",
@@ -666,6 +686,34 @@ class VectorDBClient:
         )
         data = await response.json()
         return PointDetail.from_dict(data)
+
+    # ─── Tiered Storage ────────────────────────────────────────────────────
+
+    async def get_tier_distribution(
+        self,
+        collection: str,
+    ) -> TierDistribution:
+        """
+        Get the distribution of points across storage tiers for a collection.
+
+        Returns the count and estimated memory usage for each tier (Hot, Warm, Cold).
+        When tiered storage is not enabled, all points are reported as Hot.
+
+        Args:
+            collection: Collection name
+
+        Returns:
+            TierDistribution with point counts and memory estimates per tier.
+
+        Raises:
+            CollectionNotFoundError: If collection doesn't exist
+        """
+        response = await self._request(
+            "GET",
+            f"/api/v1/collections/{collection}/tiers",
+        )
+        data = await response.json()
+        return TierDistribution.from_dict(data)
 
     async def list_points(
         self,
@@ -704,3 +752,72 @@ class VectorDBClient:
         )
         data = await response.json()
         return ListPointsResult.from_dict(data)
+
+    # ─── Reindex ──────────────────────────────────────────────────────────
+
+    async def start_reindex(self, collection: str) -> "StartReindexResponse":
+        """
+        Start a background reindex job for a collection.
+
+        Rebuilds the ANN index from scratch without blocking searches.
+        At most one reindex job can run per collection at a time.
+
+        Args:
+            collection: Collection name
+
+        Returns:
+            StartReindexResponse with the job_id and initial status.
+
+        Raises:
+            CollectionNotFoundError: If collection doesn't exist
+            VectorDBError: If a reindex is already running (409 Conflict)
+        """
+        response = await self._request(
+            "POST",
+            f"/api/v1/collections/{collection}/reindex",
+        )
+        data = await response.json()
+        return StartReindexResponse.from_dict(data)
+
+    async def get_reindex_job(
+        self, collection: str, job_id: str
+    ) -> "ReindexJob":
+        """
+        Get the status of a specific reindex job.
+
+        Args:
+            collection: Collection name
+            job_id: Reindex job ID
+
+        Returns:
+            ReindexJob with current status, progress and statistics.
+
+        Raises:
+            CollectionNotFoundError: If collection or job doesn't exist
+        """
+        response = await self._request(
+            "GET",
+            f"/api/v1/collections/{collection}/reindex/{job_id}",
+        )
+        data = await response.json()
+        return ReindexJob.from_dict(data)
+
+    async def list_reindex_jobs(self, collection: str) -> List["ReindexJob"]:
+        """
+        List all reindex jobs for a collection (newest first).
+
+        Args:
+            collection: Collection name
+
+        Returns:
+            List of ReindexJob instances.
+
+        Raises:
+            CollectionNotFoundError: If collection doesn't exist
+        """
+        response = await self._request(
+            "GET",
+            f"/api/v1/collections/{collection}/reindex",
+        )
+        data = await response.json()
+        return [ReindexJob.from_dict(j) for j in data["jobs"]]
