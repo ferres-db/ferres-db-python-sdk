@@ -10,6 +10,15 @@ from .models import (
     DistanceMetric,
     ApiKeyInfo,
     CreateKeyResponse,
+    CostBreakdown,
+    QueryCostEstimate,
+    HistoricalLatency,
+    EstimateSearchResponse,
+    ConditionResult,
+    FilterExplanation,
+    ExplainResult,
+    IndexStats,
+    SearchExplanation,
 )
 from .exceptions import (
     VectorDBError,
@@ -18,11 +27,13 @@ from .exceptions import (
     InvalidDimensionError,
     InvalidPayloadError,
     InternalError,
+    BudgetExceededError,
     ConnectionError,
 )
 
 __all__ = [
     "VectorDBClient",
+    # Models
     "Point",
     "Collection",
     "CollectionListItem",
@@ -31,12 +42,25 @@ __all__ = [
     "DistanceMetric",
     "ApiKeyInfo",
     "CreateKeyResponse",
+    # Cost estimation
+    "CostBreakdown",
+    "QueryCostEstimate",
+    "HistoricalLatency",
+    "EstimateSearchResponse",
+    # Explain query
+    "ConditionResult",
+    "FilterExplanation",
+    "ExplainResult",
+    "IndexStats",
+    "SearchExplanation",
+    # Exceptions
     "VectorDBError",
     "CollectionNotFoundError",
     "CollectionAlreadyExistsError",
     "InvalidDimensionError",
     "InvalidPayloadError",
     "InternalError",
+    "BudgetExceededError",
     "ConnectionError",
 ]
 

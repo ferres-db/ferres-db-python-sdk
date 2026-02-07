@@ -47,6 +47,14 @@ class InternalError(VectorDBError):
         super().__init__(message, code=500)
 
 
+class BudgetExceededError(VectorDBError):
+    """Raised when estimated query cost exceeds the specified budget_ms (HTTP 422)."""
+    
+    def __init__(self, message: str, estimate: dict = None):
+        self.estimate = estimate or {}
+        super().__init__(message, code=422)
+
+
 class ConnectionError(VectorDBError):
     """Raised when there's a connection error."""
     
