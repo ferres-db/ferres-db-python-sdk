@@ -14,6 +14,102 @@ class DistanceMetric(str, Enum):
     EUCLIDEAN = "Euclidean"
 
 
+# ─── Scalar Quantization (SQ8) ────────────────────────────────────────────
+
+
+class ScalarType(str, Enum):
+    """Scalar data types for quantization."""
+
+    INT8 = "Int8"
+
+
+@dataclass
+class ScalarQuantizationConfig:
+    """Configuration for scalar quantization (SQ8).
+
+    Attributes:
+        dtype: Scalar data type (currently only Int8).
+        always_ram: Keep original f32 vectors in RAM for re-ranking (default: False).
+        quantile: Percentile used for min/max calibration, 0-100 (default: 99.5).
+    """
+
+    dtype: ScalarType = ScalarType.INT8
+    always_ram: bool = False
+    quantile: float = 99.5
+
+    def to_dict(self) -> dict:
+        """Serialize to the server's JSON format."""
+        d: Dict[str, Any] = {"dtype": self.dtype.value}
+        if self.always_ram:
+            d["always_ram"] = True
+        if self.quantile != 99.5:
+            d["quantile"] = self.quantile
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ScalarQuantizationConfig":
+        """Create from a dictionary."""
+        return cls(
+            dtype=ScalarType(data["dtype"]),
+            always_ram=data.get("always_ram", False),
+            quantile=data.get("quantile", 99.5),
+        )
+
+
+@dataclass
+class QuantizationConfig:
+    """Vector quantization configuration.
+
+    Use ``QuantizationConfig.none()`` for no quantization (default), or
+    ``QuantizationConfig.scalar(...)`` to enable SQ8 compression.
+
+    The server serializes this as a tagged enum:
+      - ``"None"``
+      - ``{"Scalar": {"dtype": "Int8", ...}}``
+    """
+
+    scalar: Optional[ScalarQuantizationConfig] = None
+
+    # ── Convenience constructors ──────────────────────────────────────
+
+    @classmethod
+    def none(cls) -> "QuantizationConfig":
+        """No quantization (default)."""
+        return cls(scalar=None)
+
+    @classmethod
+    def scalar_int8(
+        cls,
+        always_ram: bool = False,
+        quantile: float = 99.5,
+    ) -> "QuantizationConfig":
+        """Enable SQ8 (Int8) scalar quantization."""
+        return cls(
+            scalar=ScalarQuantizationConfig(
+                dtype=ScalarType.INT8,
+                always_ram=always_ram,
+                quantile=quantile,
+            )
+        )
+
+    # ── Serialization ─────────────────────────────────────────────────
+
+    def to_dict(self) -> Any:
+        """Serialize to the server's tagged-enum JSON format."""
+        if self.scalar is None:
+            return "None"
+        return {"Scalar": self.scalar.to_dict()}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "QuantizationConfig":
+        """Deserialize from the server's tagged-enum JSON format."""
+        if data is None or data == "None":
+            return cls.none()
+        if isinstance(data, dict) and "Scalar" in data:
+            return cls(scalar=ScalarQuantizationConfig.from_dict(data["Scalar"]))
+        return cls.none()
+
+
 @dataclass
 class Point:
     """Represents a vector point with ID, vector, and metadata."""
@@ -66,6 +162,7 @@ class CollectionListItem:
     dimension: int
     num_points: int
     created_at: int
+    distance: DistanceMetric = DistanceMetric.COSINE
     
     @classmethod
     def from_dict(cls, data: dict) -> "CollectionListItem":
@@ -75,6 +172,90 @@ class CollectionListItem:
             dimension=data["dimension"],
             num_points=data["num_points"],
             created_at=data["created_at"],
+            distance=DistanceMetric(data["distance"]) if "distance" in data else DistanceMetric.COSINE,
+        )
+
+
+# ─── Collection Detail (GET /collections/{name}) ──────────────────────────
+
+
+@dataclass
+class CollectionStats:
+    """Statistics about a collection's index."""
+
+    index_size_bytes: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CollectionStats":
+        return cls(index_size_bytes=data["index_size_bytes"])
+
+
+@dataclass
+class CollectionDetail:
+    """Detailed information about a single collection."""
+
+    name: str
+    dimension: int
+    num_points: int
+    last_updated: int
+    distance: DistanceMetric
+    stats: CollectionStats
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CollectionDetail":
+        return cls(
+            name=data["name"],
+            dimension=data["dimension"],
+            num_points=data["num_points"],
+            last_updated=data["last_updated"],
+            distance=DistanceMetric(data["distance"]),
+            stats=CollectionStats.from_dict(data["stats"]),
+        )
+
+
+# ─── Point Detail (GET /collections/{name}/points/{id}) ───────────────────
+
+
+@dataclass
+class PointDetail:
+    """Full point data including vector, metadata, and creation timestamp."""
+
+    id: str
+    vector: List[float]
+    metadata: Dict[str, Any]
+    created_at: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PointDetail":
+        return cls(
+            id=data["id"],
+            vector=data["vector"],
+            metadata=data.get("metadata", {}),
+            created_at=data["created_at"],
+        )
+
+
+# ─── List Points (GET /collections/{name}/points) ─────────────────────────
+
+
+@dataclass
+class ListPointsResult:
+    """Paginated list of points."""
+
+    points: List[PointDetail]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ListPointsResult":
+        return cls(
+            points=[PointDetail.from_dict(p) for p in data["points"]],
+            total=data["total"],
+            limit=data["limit"],
+            offset=data["offset"],
+            has_more=data["has_more"],
         )
 
 
@@ -360,4 +541,92 @@ class SearchExplanation:
             candidates_after_filter=data["candidates_after_filter"],
             results=[ExplainResult.from_dict(r) for r in data["results"]],
             index_stats=IndexStats.from_dict(data["index_stats"]),
+        )
+
+
+# ─── Search Response (includes query_id) ──────────────────────────────────
+
+
+@dataclass
+class SearchResponse:
+    """Full search response including results, timing, and optional query ID."""
+
+    results: List[SearchResult]
+    took_ms: int
+    query_id: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SearchResponse":
+        return cls(
+            results=[SearchResult.from_dict(r) for r in data["results"]],
+            took_ms=data["took_ms"],
+            query_id=data.get("query_id"),
+        )
+
+
+# ─── Delete Points Result ─────────────────────────────────────────────────
+
+
+@dataclass
+class DeletePointsResult:
+    """Result of a delete points operation."""
+
+    deleted: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DeletePointsResult":
+        return cls(deleted=data["deleted"])
+
+
+# ─── WebSocket Messages ───────────────────────────────────────────────────
+
+
+@dataclass
+class WsAckMessage:
+    """Acknowledgement from the server after an upsert or subscribe via WebSocket."""
+
+    upserted: int
+    failed: int
+    took_ms: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WsAckMessage":
+        return cls(
+            upserted=data["upserted"],
+            failed=data["failed"],
+            took_ms=data["took_ms"],
+        )
+
+
+@dataclass
+class WsEventMessage:
+    """Real-time event notification received via WebSocket subscription."""
+
+    collection: str
+    action: str
+    point_ids: List[str]
+    timestamp: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WsEventMessage":
+        return cls(
+            collection=data["collection"],
+            action=data["action"],
+            point_ids=data["point_ids"],
+            timestamp=data["timestamp"],
+        )
+
+
+@dataclass
+class WsErrorMessage:
+    """Error message received via WebSocket."""
+
+    message: str
+    code: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WsErrorMessage":
+        return cls(
+            message=data["message"],
+            code=data["code"],
         )

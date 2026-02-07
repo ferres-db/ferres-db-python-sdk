@@ -13,9 +13,15 @@ from .models import (
     Point,
     Collection,
     CollectionListItem,
+    CollectionDetail,
+    PointDetail,
+    ListPointsResult,
     SearchResult,
+    SearchResponse,
     UpsertResult,
+    DeletePointsResult,
     DistanceMetric,
+    QuantizationConfig,
     ApiKeyInfo,
     CreateKeyResponse,
     EstimateSearchResponse,
@@ -231,6 +237,7 @@ class VectorDBClient:
         distance: DistanceMetric,
         enable_bm25: Optional[bool] = None,
         bm25_text_field: Optional[str] = None,
+        quantization: Optional[QuantizationConfig] = None,
     ) -> Collection:
         """
         Create a new collection.
@@ -241,6 +248,8 @@ class VectorDBClient:
             distance: Distance metric to use
             enable_bm25: Optional; enable BM25 index for hybrid search (default: False)
             bm25_text_field: Optional; metadata key used as text for BM25 (default: "text")
+            quantization: Optional; quantization config (use ``QuantizationConfig.scalar_int8()``
+                to enable SQ8 compression with ~4x memory savings)
 
         Returns:
             Created collection
@@ -259,6 +268,8 @@ class VectorDBClient:
             payload["enable_bm25"] = enable_bm25
         if bm25_text_field is not None:
             payload["bm25_text_field"] = bm25_text_field
+        if quantization is not None:
+            payload["quantization"] = quantization.to_dict()
 
         response = await self._request("POST", "/api/v1/collections", json_data=payload)
         data = await response.json()
@@ -285,6 +296,23 @@ class VectorDBClient:
             for item in data["collections"]
         ]
     
+    async def get_collection(self, name: str) -> CollectionDetail:
+        """
+        Get detailed information about a single collection.
+
+        Args:
+            name: Collection name
+
+        Returns:
+            CollectionDetail with dimension, num_points, last_updated, distance, and stats.
+
+        Raises:
+            CollectionNotFoundError: If collection doesn't exist
+        """
+        response = await self._request("GET", f"/api/v1/collections/{name}")
+        data = await response.json()
+        return CollectionDetail.from_dict(data)
+
     async def delete_collection(self, name: str) -> None:
         """
         Delete a collection.
@@ -360,13 +388,16 @@ class VectorDBClient:
         self,
         collection: str,
         ids: List[str],
-    ) -> None:
+    ) -> DeletePointsResult:
         """
         Delete points from a collection by IDs.
         
         Args:
             collection: Collection name
             ids: List of point IDs to delete
+        
+        Returns:
+            DeletePointsResult with the number of points actually deleted.
         
         Raises:
             CollectionNotFoundError: If collection doesn't exist
@@ -377,11 +408,13 @@ class VectorDBClient:
         
         payload = {"ids": ids}
         
-        await self._request(
+        response = await self._request(
             "DELETE",
             f"/api/v1/collections/{collection}/points",
             json_data=payload,
         )
+        data = await response.json()
+        return DeletePointsResult.from_dict(data)
     
     async def search(
         self,
@@ -390,7 +423,7 @@ class VectorDBClient:
         limit: int = 10,
         filter: Optional[Dict[str, Any]] = None,
         budget_ms: Optional[int] = None,
-    ) -> List[SearchResult]:
+    ) -> SearchResponse:
         """
         Search for similar vectors in a collection.
         
@@ -404,7 +437,7 @@ class VectorDBClient:
                 the search. Catch ``BudgetExceededError`` for the detailed estimate.
         
         Returns:
-            List of search results sorted by similarity
+            SearchResponse with results, took_ms, and optional query_id.
         
         Raises:
             CollectionNotFoundError: If collection doesn't exist
@@ -429,10 +462,7 @@ class VectorDBClient:
         )
         data = await response.json()
         
-        return [
-            SearchResult.from_dict(result)
-            for result in data["results"]
-        ]
+        return SearchResponse.from_dict(data)
 
     async def list_keys(self) -> List[ApiKeyInfo]:
         """
@@ -563,3 +593,114 @@ class VectorDBClient:
         data = await response.json()
 
         return SearchExplanation.from_dict(data)
+
+    # ─── Hybrid Search ─────────────────────────────────────────────────────
+
+    async def hybrid_search(
+        self,
+        collection: str,
+        query_text: str,
+        query_vector: List[float],
+        limit: int = 10,
+        alpha: float = 0.5,
+    ) -> SearchResponse:
+        """
+        Perform a hybrid search combining BM25 keyword matching and vector similarity.
+
+        Requires the collection to have been created with ``enable_bm25=True``.
+
+        Args:
+            collection: Collection name (must have BM25 enabled)
+            query_text: Text query for BM25 keyword matching
+            query_vector: Query vector for similarity search
+            limit: Maximum number of results (default: 10)
+            alpha: Weight for vector search score (0.0-1.0). ``1-alpha`` is used
+                for the BM25 keyword score. Default: 0.5.
+
+        Returns:
+            SearchResponse with combined results, took_ms, and optional query_id.
+
+        Raises:
+            CollectionNotFoundError: If collection doesn't exist
+            InvalidDimensionError: If vector dimension doesn't match collection
+        """
+        payload: Dict[str, Any] = {
+            "query_text": query_text,
+            "query_vector": query_vector,
+            "limit": limit,
+            "alpha": alpha,
+        }
+
+        response = await self._request(
+            "POST",
+            f"/api/v1/collections/{collection}/search/hybrid",
+            json_data=payload,
+        )
+        data = await response.json()
+
+        return SearchResponse.from_dict(data)
+
+    # ─── Point Operations ──────────────────────────────────────────────────
+
+    async def get_point(
+        self,
+        collection: str,
+        point_id: str,
+    ) -> PointDetail:
+        """
+        Get a single point by ID, including its vector and metadata.
+
+        Args:
+            collection: Collection name
+            point_id: Unique point ID
+
+        Returns:
+            PointDetail with id, vector, metadata, and created_at.
+
+        Raises:
+            CollectionNotFoundError: If collection doesn't exist
+        """
+        response = await self._request(
+            "GET",
+            f"/api/v1/collections/{collection}/points/{point_id}",
+        )
+        data = await response.json()
+        return PointDetail.from_dict(data)
+
+    async def list_points(
+        self,
+        collection: str,
+        limit: int = 100,
+        offset: int = 0,
+        filter: Optional[Dict[str, Any]] = None,
+    ) -> ListPointsResult:
+        """
+        List points in a collection with pagination.
+
+        Args:
+            collection: Collection name
+            limit: Maximum number of points per page (default: 100, max: 1000)
+            offset: Number of points to skip (default: 0)
+            filter: Optional metadata filter as a dict (will be JSON-encoded
+                as a query parameter)
+
+        Returns:
+            ListPointsResult with points, total, limit, offset, has_more.
+
+        Raises:
+            CollectionNotFoundError: If collection doesn't exist
+        """
+        params: Dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+        }
+        if filter is not None:
+            params["filter"] = json.dumps(filter)
+
+        query_string = "&".join(f"{k}={v}" for k, v in params.items())
+        response = await self._request(
+            "GET",
+            f"/api/v1/collections/{collection}/points?{query_string}",
+        )
+        data = await response.json()
+        return ListPointsResult.from_dict(data)
