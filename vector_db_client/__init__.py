@@ -19,6 +19,9 @@ from .models import (
     ScalarType,
     ScalarQuantizationConfig,
     QuantizationConfig,
+    # Tiered Storage
+    TieredStorageConfig,
+    TierDistribution,
     # API keys
     ApiKeyInfo,
     CreateKeyResponse,
@@ -33,6 +36,11 @@ from .models import (
     ExplainResult,
     IndexStats,
     SearchExplanation,
+    # Reindex
+    ReindexStatus,
+    ReindexStats,
+    ReindexJob,
+    StartReindexResponse,
     # WebSocket messages
     WsAckMessage,
     WsEventMessage,
@@ -70,6 +78,9 @@ __all__ = [
     "ScalarType",
     "ScalarQuantizationConfig",
     "QuantizationConfig",
+    # Tiered Storage
+    "TieredStorageConfig",
+    "TierDistribution",
     # API keys
     "ApiKeyInfo",
     "CreateKeyResponse",
@@ -84,6 +95,11 @@ __all__ = [
     "ExplainResult",
     "IndexStats",
     "SearchExplanation",
+    # Reindex
+    "ReindexStatus",
+    "ReindexStats",
+    "ReindexJob",
+    "StartReindexResponse",
     # WebSocket messages
     "WsAckMessage",
     "WsEventMessage",

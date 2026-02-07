@@ -242,3 +242,14 @@ Type checking:
 ```bash
 mypy vector_db_client
 ```
+
+## gRPC API
+
+O FerresDB também oferece uma API gRPC nativa (porta 50051 por padrão) como alternativa à API REST. Este SDK usa a API REST; para usar gRPC diretamente, gere stubs de cliente a partir do arquivo `proto/ferresdb.proto` no repositório do servidor (requer `--features grpc` no build do server).
+
+Para gerar stubs gRPC em Python:
+
+```bash
+pip install grpcio-tools
+python -m grpc_tools.protoc -I./proto --python_out=. --grpc_python_out=. proto/ferresdb.proto
+```
