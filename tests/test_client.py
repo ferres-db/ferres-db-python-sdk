@@ -15,10 +15,20 @@ from vector_db_client import (
     DistanceMetric,
     ApiKeyInfo,
     CreateKeyResponse,
+    EstimateSearchResponse,
+    QueryCostEstimate,
+    CostBreakdown,
+    HistoricalLatency,
+    SearchExplanation,
+    ExplainResult,
+    FilterExplanation,
+    ConditionResult,
+    IndexStats,
     CollectionNotFoundError,
     CollectionAlreadyExistsError,
     InvalidDimensionError,
     InvalidPayloadError,
+    BudgetExceededError,
     ConnectionError,
 )
 
@@ -548,3 +558,342 @@ async def test_close_method(client):
     with patch.object(client.client, "aclose", new_callable=AsyncMock) as mock_close:
         await client.close()
         mock_close.assert_called_once()
+
+
+# ─── Search with budget_ms ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_search_with_budget_ms(client, mock_response):
+    """Test search sends budget_ms when provided."""
+    response_data = {
+        "results": [
+            {"id": "1", "score": 0.95, "metadata": {"text": "hello"}},
+        ],
+        "took_ms": 3,
+    }
+
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        results = await client.search(
+            collection="test-collection",
+            vector=[0.1, 0.2, 0.3],
+            limit=10,
+            budget_ms=50,
+        )
+
+        assert len(results) == 1
+        call_args = mock_request.call_args
+        assert call_args.kwargs["json"]["budget_ms"] == 50
+
+
+@pytest.mark.asyncio
+async def test_search_without_budget_ms_omits_field(client, mock_response):
+    """Test search does not include budget_ms when not provided."""
+    response_data = {"results": [], "took_ms": 1}
+
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        await client.search(
+            collection="test-collection",
+            vector=[0.1, 0.2],
+            limit=5,
+        )
+
+        call_args = mock_request.call_args
+        assert "budget_ms" not in call_args.kwargs["json"]
+
+
+@pytest.mark.asyncio
+async def test_search_budget_exceeded_error(client, mock_response):
+    """Test that search raises BudgetExceededError when budget is exceeded."""
+    error_data = {
+        "error": "budget_exceeded",
+        "message": "estimated cost (12.5ms) exceeds budget (5ms)",
+        "code": 422,
+        "estimate": {
+            "estimated_ms": 12.5,
+            "confidence_range": [6.25, 18.75],
+            "is_expensive": True,
+            "recommendations": ["Considere reduzir limit"],
+            "breakdown": {
+                "index_scan_cost": 10.0,
+                "filter_cost": 0.5,
+                "hydration_cost": 1.0,
+                "network_overhead": 1.0,
+            },
+        },
+    }
+
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(422, error_data)
+
+        with pytest.raises(BudgetExceededError) as exc_info:
+            await client.search(
+                collection="test-collection",
+                vector=[0.1, 0.2, 0.3],
+                limit=10,
+                budget_ms=5,
+            )
+
+        assert exc_info.value.code == 422
+        assert "12.5ms" in str(exc_info.value)
+        assert exc_info.value.estimate["estimated_ms"] == 12.5
+
+
+# ─── Estimate Search Cost ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_estimate_search_cost(client, mock_response):
+    """Test estimate_search_cost returns a valid estimate."""
+    response_data = {
+        "estimated_ms": 2.35,
+        "confidence_range": [1.17, 8.0],
+        "estimated_memory_bytes": 45320,
+        "estimated_nodes_visited": 575,
+        "is_expensive": False,
+        "recommendations": [],
+        "breakdown": {
+            "index_scan_cost": 1.76,
+            "filter_cost": 0.0003,
+            "hydration_cost": 0.01,
+            "network_overhead": 0.1,
+        },
+    }
+
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        result = await client.estimate_search_cost(
+            collection="docs",
+            limit=10,
+        )
+
+        assert isinstance(result, EstimateSearchResponse)
+        assert result.estimate.estimated_ms == 2.35
+        assert result.estimate.is_expensive is False
+        assert result.estimate.estimated_nodes_visited == 575
+        assert result.estimate.breakdown.index_scan_cost == 1.76
+        assert result.historical_latency is None
+
+        call_args = mock_request.call_args
+        assert call_args.kwargs["json"] == {"limit": 10}
+
+
+@pytest.mark.asyncio
+async def test_estimate_search_cost_with_filter_and_history(client, mock_response):
+    """Test estimate_search_cost with filter and include_history."""
+    response_data = {
+        "estimated_ms": 5.0,
+        "confidence_range": [2.5, 15.0],
+        "estimated_memory_bytes": 90000,
+        "estimated_nodes_visited": 1000,
+        "is_expensive": True,
+        "recommendations": ["Reduza limit para melhor performance"],
+        "breakdown": {
+            "index_scan_cost": 3.5,
+            "filter_cost": 0.5,
+            "hydration_cost": 0.5,
+            "network_overhead": 0.5,
+        },
+        "historical_latency": {
+            "p50_ms": 2.0,
+            "p95_ms": 8.0,
+            "p99_ms": 15.0,
+            "avg_ms": 3.2,
+            "total_queries": 1520,
+        },
+    }
+
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        result = await client.estimate_search_cost(
+            collection="docs",
+            limit=100,
+            filter={"category": "tech"},
+            include_history=True,
+        )
+
+        assert result.estimate.is_expensive is True
+        assert len(result.estimate.recommendations) == 1
+        assert result.historical_latency is not None
+        assert result.historical_latency.p50_ms == 2.0
+        assert result.historical_latency.total_queries == 1520
+
+        call_args = mock_request.call_args
+        assert call_args.kwargs["json"] == {
+            "limit": 100,
+            "filter": {"category": "tech"},
+            "include_history": True,
+        }
+
+
+@pytest.mark.asyncio
+async def test_estimate_search_cost_collection_not_found(client, mock_response):
+    """Test estimate returns CollectionNotFoundError for unknown collection."""
+    error_data = {
+        "error": "collection_not_found",
+        "message": "collection 'nope' not found",
+        "code": 404,
+    }
+
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(404, error_data)
+
+        with pytest.raises(CollectionNotFoundError):
+            await client.estimate_search_cost(collection="nope", limit=10)
+
+
+# ─── Explain Search ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_search_explain(client, mock_response):
+    """Test search_explain returns a valid explanation."""
+    response_data = {
+        "query_vector_norm": 0.245,
+        "distance_metric": "Cosine",
+        "candidates_scanned": 30,
+        "candidates_after_filter": 5,
+        "results": [
+            {
+                "id": "doc-1",
+                "score": 0.12,
+                "distance_metric": "Cosine",
+                "raw_distance": 0.12,
+                "score_breakdown": {"vector_score": 0.12},
+                "filter_evaluation": None,
+                "rank_before_filter": 1,
+                "rank_after_filter": 1,
+            }
+        ],
+        "index_stats": {
+            "total_points": 1000,
+            "hnsw_layers": 16,
+            "ef_search_used": 50,
+            "tombstones_skipped": 0,
+        },
+    }
+
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        explanation = await client.search_explain(
+            collection="docs",
+            vector=[0.1, 0.2, -0.1],
+            limit=5,
+        )
+
+        assert isinstance(explanation, SearchExplanation)
+        assert explanation.query_vector_norm == 0.245
+        assert explanation.distance_metric == "Cosine"
+        assert explanation.candidates_scanned == 30
+        assert explanation.candidates_after_filter == 5
+        assert len(explanation.results) == 1
+        assert explanation.results[0].id == "doc-1"
+        assert explanation.results[0].score_breakdown["vector_score"] == 0.12
+        assert explanation.index_stats.total_points == 1000
+        assert explanation.index_stats.ef_search_used == 50
+
+        call_args = mock_request.call_args
+        assert call_args.kwargs["json"] == {
+            "vector": [0.1, 0.2, -0.1],
+            "limit": 5,
+        }
+
+
+@pytest.mark.asyncio
+async def test_search_explain_with_filter(client, mock_response):
+    """Test search_explain with filter returns per-condition evaluation."""
+    response_data = {
+        "query_vector_norm": 0.3,
+        "distance_metric": "Cosine",
+        "candidates_scanned": 50,
+        "candidates_after_filter": 3,
+        "results": [
+            {
+                "id": "doc-1",
+                "score": 0.85,
+                "distance_metric": "Cosine",
+                "raw_distance": 0.85,
+                "score_breakdown": {"vector_score": 0.85},
+                "filter_evaluation": {
+                    "conditions": [
+                        {
+                            "field": "category",
+                            "operator": "$eq",
+                            "expected": "tech",
+                            "actual": "tech",
+                            "passed": True,
+                        },
+                        {
+                            "field": "price",
+                            "operator": "$gte",
+                            "expected": 10,
+                            "actual": 25,
+                            "passed": True,
+                        },
+                    ],
+                    "passed": True,
+                },
+                "rank_before_filter": 1,
+                "rank_after_filter": 1,
+            },
+        ],
+        "index_stats": {
+            "total_points": 5000,
+            "hnsw_layers": 20,
+            "ef_search_used": 100,
+            "tombstones_skipped": 3,
+        },
+    }
+
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(200, response_data)
+
+        explanation = await client.search_explain(
+            collection="products",
+            vector=[0.1, 0.2, -0.1],
+            limit=10,
+            filter={"category": "tech", "price": {"$gte": 10}},
+        )
+
+        assert explanation.candidates_after_filter == 3
+        result = explanation.results[0]
+        assert result.filter_evaluation is not None
+        assert result.filter_evaluation.passed is True
+        assert len(result.filter_evaluation.conditions) == 2
+        assert result.filter_evaluation.conditions[0].field == "category"
+        assert result.filter_evaluation.conditions[0].passed is True
+        assert result.filter_evaluation.conditions[1].operator == "$gte"
+        assert explanation.index_stats.tombstones_skipped == 3
+
+        call_args = mock_request.call_args
+        assert call_args.kwargs["json"]["filter"] == {
+            "category": "tech",
+            "price": {"$gte": 10},
+        }
+
+
+@pytest.mark.asyncio
+async def test_search_explain_collection_not_found(client, mock_response):
+    """Test search_explain returns CollectionNotFoundError for unknown collection."""
+    error_data = {
+        "error": "collection_not_found",
+        "message": "collection 'nope' not found",
+        "code": 404,
+    }
+
+    with patch.object(client.client, "request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response(404, error_data)
+
+        with pytest.raises(CollectionNotFoundError):
+            await client.search_explain(
+                collection="nope",
+                vector=[0.1, 0.2],
+                limit=5,
+            )

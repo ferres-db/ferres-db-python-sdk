@@ -18,6 +18,9 @@ from .models import (
     DistanceMetric,
     ApiKeyInfo,
     CreateKeyResponse,
+    EstimateSearchResponse,
+    QueryCostEstimate,
+    SearchExplanation,
 )
 from .exceptions import (
     VectorDBError,
@@ -26,6 +29,7 @@ from .exceptions import (
     InvalidDimensionError,
     InvalidPayloadError,
     InternalError,
+    BudgetExceededError,
     ConnectionError,
 )
 
@@ -98,6 +102,11 @@ class VectorDBClient:
             "invalid_payload": InvalidPayloadError,
             "internal_error": InternalError,
         }
+        
+        # Handle budget_exceeded specially (includes estimate in body)
+        if error_type == "budget_exceeded":
+            estimate = error_data.get("estimate", {}) if isinstance(error_data, dict) else {}
+            raise BudgetExceededError(message, estimate=estimate)
         
         error_class = error_map.get(error_type, VectorDBError)
         
@@ -380,6 +389,7 @@ class VectorDBClient:
         vector: List[float],
         limit: int = 10,
         filter: Optional[Dict[str, Any]] = None,
+        budget_ms: Optional[int] = None,
     ) -> List[SearchResult]:
         """
         Search for similar vectors in a collection.
@@ -389,6 +399,9 @@ class VectorDBClient:
             vector: Query vector
             limit: Maximum number of results (default: 10)
             filter: Optional metadata filter (equality matching)
+            budget_ms: Optional latency budget in milliseconds. If the estimated
+                cost exceeds this budget, the server returns 422 without executing
+                the search. Catch ``BudgetExceededError`` for the detailed estimate.
         
         Returns:
             List of search results sorted by similarity
@@ -396,14 +409,18 @@ class VectorDBClient:
         Raises:
             CollectionNotFoundError: If collection doesn't exist
             InvalidDimensionError: If vector dimension doesn't match collection
+            BudgetExceededError: If budget_ms is set and estimated cost exceeds it
         """
-        payload = {
+        payload: Dict[str, Any] = {
             "vector": vector,
             "limit": limit,
         }
         
         if filter is not None:
             payload["filter"] = filter
+        
+        if budget_ms is not None:
+            payload["budget_ms"] = budget_ms
         
         response = await self._request(
             "POST",
@@ -458,3 +475,91 @@ class VectorDBClient:
             key_id: Numeric id of the key (from list_keys or create_key).
         """
         await self._request("DELETE", f"/api/v1/keys/{key_id}")
+
+    # ─── Query Cost Estimation ──────────────────────────────────────────────
+
+    async def estimate_search_cost(
+        self,
+        collection: str,
+        limit: int,
+        filter: Optional[Dict[str, Any]] = None,
+        include_history: bool = False,
+    ) -> EstimateSearchResponse:
+        """
+        Estimate the cost of a search query **before** executing it.
+
+        Returns estimated latency, memory consumption, HNSW nodes visited,
+        whether the query is "expensive", and optimisation recommendations.
+
+        Args:
+            collection: Collection name
+            limit: Number of results that would be requested
+            filter: Optional metadata filter (same format as search)
+            include_history: If True, include historical latency percentiles
+                (p50/p95/p99/avg) in the response.
+
+        Returns:
+            EstimateSearchResponse with cost estimate and optional history.
+
+        Raises:
+            CollectionNotFoundError: If collection doesn't exist
+        """
+        payload: Dict[str, Any] = {"limit": limit}
+        if filter is not None:
+            payload["filter"] = filter
+        if include_history:
+            payload["include_history"] = True
+
+        response = await self._request(
+            "POST",
+            f"/api/v1/collections/{collection}/search/estimate",
+            json_data=payload,
+        )
+        data = await response.json()
+
+        return EstimateSearchResponse.from_dict(data)
+
+    # ─── Explain Query ──────────────────────────────────────────────────────
+
+    async def search_explain(
+        self,
+        collection: str,
+        vector: List[float],
+        limit: int = 10,
+        filter: Optional[Dict[str, Any]] = None,
+    ) -> SearchExplanation:
+        """
+        Search with a detailed explanation of each result.
+
+        Returns **why** each result was returned (or filtered): score
+        breakdown, per-condition filter evaluation, ranking before/after
+        filters, and HNSW index statistics.
+
+        Args:
+            collection: Collection name
+            vector: Query vector
+            limit: Maximum number of results (default: 10)
+            filter: Optional metadata filter
+
+        Returns:
+            SearchExplanation with full breakdown per result.
+
+        Raises:
+            CollectionNotFoundError: If collection doesn't exist
+            InvalidDimensionError: If vector dimension doesn't match collection
+        """
+        payload: Dict[str, Any] = {
+            "vector": vector,
+            "limit": limit,
+        }
+        if filter is not None:
+            payload["filter"] = filter
+
+        response = await self._request(
+            "POST",
+            f"/api/v1/collections/{collection}/search/explain",
+            json_data=payload,
+        )
+        data = await response.json()
+
+        return SearchExplanation.from_dict(data)
