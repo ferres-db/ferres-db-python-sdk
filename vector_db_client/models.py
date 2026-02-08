@@ -561,6 +561,7 @@ class ExplainResult:
     rank_before_filter: int
     rank_after_filter: int
     filter_evaluation: Optional[FilterExplanation] = None
+    similarity: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "ExplainResult":
@@ -577,6 +578,7 @@ class ExplainResult:
             rank_before_filter=data["rank_before_filter"],
             rank_after_filter=data["rank_after_filter"],
             filter_evaluation=filter_eval,
+            similarity=data.get("similarity"),
         )
 
 
