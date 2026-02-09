@@ -193,19 +193,29 @@ class TierDistribution:
 @dataclass
 class Point:
     """Represents a vector point with ID, vector, and metadata."""
-    
+
     id: str
     vector: List[float]
     metadata: Dict[str, Any]
-    
+    namespace: Optional[str] = None
+    ttl: Optional[int] = None
+    vectors: Optional[Dict[str, List[float]]] = None
+
     def to_dict(self) -> dict:
         """Convert point to dictionary for API requests."""
-        return {
+        d: Dict[str, Any] = {
             "id": self.id,
             "vector": self.vector,
             "metadata": self.metadata,
         }
-    
+        if self.namespace is not None:
+            d["namespace"] = self.namespace
+        if self.ttl is not None:
+            d["ttl"] = self.ttl
+        if self.vectors is not None:
+            d["vectors"] = self.vectors
+        return d
+
     @classmethod
     def from_dict(cls, data: dict) -> "Point":
         """Create a Point from a dictionary."""
@@ -213,6 +223,9 @@ class Point:
             id=data["id"],
             vector=data["vector"],
             metadata=data.get("metadata", {}),
+            namespace=data.get("namespace"),
+            ttl=data.get("ttl"),
+            vectors=data.get("vectors"),
         )
 
 
@@ -304,6 +317,8 @@ class PointDetail:
     vector: List[float]
     metadata: Dict[str, Any]
     created_at: int
+    namespace: Optional[str] = None
+    vectors: Optional[Dict[str, List[float]]] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "PointDetail":
@@ -312,6 +327,8 @@ class PointDetail:
             vector=data["vector"],
             metadata=data.get("metadata", {}),
             created_at=data["created_at"],
+            namespace=data.get("namespace"),
+            vectors=data.get("vectors"),
         )
 
 
@@ -342,11 +359,12 @@ class ListPointsResult:
 @dataclass
 class SearchResult:
     """Represents a search result."""
-    
+
     id: str
     score: float
     metadata: Dict[str, Any]
-    
+    namespace: Optional[str] = None
+
     @classmethod
     def from_dict(cls, data: dict) -> "SearchResult":
         """Create a SearchResult from a dictionary."""
@@ -354,6 +372,7 @@ class SearchResult:
             id=data["id"],
             score=data["score"],
             metadata=data["metadata"],
+            namespace=data.get("namespace"),
         )
 
 
