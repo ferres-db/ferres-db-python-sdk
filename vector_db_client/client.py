@@ -4,7 +4,7 @@ import asyncio
 import time
 import json
 from typing import List, Optional, Dict, Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote
 
 import httpx
 import structlog
@@ -398,26 +398,31 @@ class VectorDBClient:
         self,
         collection: str,
         ids: List[str],
+        namespace: Optional[str] = None,
     ) -> DeletePointsResult:
         """
         Delete points from a collection by IDs.
-        
+
         Args:
             collection: Collection name
             ids: List of point IDs to delete
-        
+            namespace: Optional logical namespace (multitenancy); when given,
+                only points in this namespace are deleted for the provided ids.
+
         Returns:
             DeletePointsResult with the number of points actually deleted.
-        
+
         Raises:
             CollectionNotFoundError: If collection doesn't exist
             InvalidPayloadError: If ids list is empty
         """
         if not ids:
             raise InvalidPayloadError("ids cannot be empty")
-        
-        payload = {"ids": ids}
-        
+
+        payload: Dict[str, Any] = {"ids": ids}
+        if namespace is not None:
+            payload["namespace"] = namespace
+
         response = await self._request(
             "DELETE",
             f"/api/v1/collections/{collection}/points",
@@ -433,10 +438,12 @@ class VectorDBClient:
         limit: int = 10,
         filter: Optional[Dict[str, Any]] = None,
         budget_ms: Optional[int] = None,
+        namespace: Optional[str] = None,
+        vector_field: Optional[str] = None,
     ) -> SearchResponse:
         """
         Search for similar vectors in a collection.
-        
+
         Args:
             collection: Collection name
             vector: Query vector
@@ -445,10 +452,13 @@ class VectorDBClient:
             budget_ms: Optional latency budget in milliseconds. If the estimated
                 cost exceeds this budget, the server returns 422 without executing
                 the search. Catch ``BudgetExceededError`` for the detailed estimate.
-        
+            namespace: Optional logical namespace (multitenancy) to restrict results.
+            vector_field: Optional named vector field to search against (e.g.
+                "title_vector", "content_vector"). Omit or "default" for main vector.
+
         Returns:
             SearchResponse with results, took_ms, and optional query_id.
-        
+
         Raises:
             CollectionNotFoundError: If collection doesn't exist
             InvalidDimensionError: If vector dimension doesn't match collection
@@ -458,13 +468,19 @@ class VectorDBClient:
             "vector": vector,
             "limit": limit,
         }
-        
+
         if filter is not None:
             payload["filter"] = filter
-        
+
         if budget_ms is not None:
             payload["budget_ms"] = budget_ms
-        
+
+        if namespace is not None:
+            payload["namespace"] = namespace
+
+        if vector_field is not None:
+            payload["vector_field"] = vector_field
+
         response = await self._request(
             "POST",
             f"/api/v1/collections/{collection}/search",
@@ -524,6 +540,7 @@ class VectorDBClient:
         limit: int,
         filter: Optional[Dict[str, Any]] = None,
         include_history: bool = False,
+        namespace: Optional[str] = None,
     ) -> EstimateSearchResponse:
         """
         Estimate the cost of a search query **before** executing it.
@@ -537,6 +554,7 @@ class VectorDBClient:
             filter: Optional metadata filter (same format as search)
             include_history: If True, include historical latency percentiles
                 (p50/p95/p99/avg) in the response.
+            namespace: Optional logical namespace to scope the estimate.
 
         Returns:
             EstimateSearchResponse with cost estimate and optional history.
@@ -549,6 +567,8 @@ class VectorDBClient:
             payload["filter"] = filter
         if include_history:
             payload["include_history"] = True
+        if namespace is not None:
+            payload["namespace"] = namespace
 
         response = await self._request(
             "POST",
@@ -615,6 +635,7 @@ class VectorDBClient:
         alpha: float = 0.5,
         fusion: Optional[str] = None,
         rrf_k: Optional[int] = None,
+        namespace: Optional[str] = None,
     ) -> SearchResponse:
         """
         Perform a hybrid search combining BM25 keyword matching and vector similarity.
@@ -632,6 +653,7 @@ class VectorDBClient:
                 (Reciprocal Rank Fusion).
             rrf_k: RRF constant k (default: 60). Only used when ``fusion="rrf"``.
                 Higher values smooth rank differences.
+            namespace: Optional logical namespace (multitenancy) to restrict results.
 
         Returns:
             SearchResponse with combined results, took_ms, and optional query_id.
@@ -650,6 +672,8 @@ class VectorDBClient:
             payload["fusion"] = fusion
         if rrf_k is not None:
             payload["rrf_k"] = rrf_k
+        if namespace is not None:
+            payload["namespace"] = namespace
 
         response = await self._request(
             "POST",
@@ -666,6 +690,7 @@ class VectorDBClient:
         self,
         collection: str,
         point_id: str,
+        namespace: Optional[str] = None,
     ) -> PointDetail:
         """
         Get a single point by ID, including its vector and metadata.
@@ -673,6 +698,8 @@ class VectorDBClient:
         Args:
             collection: Collection name
             point_id: Unique point ID
+            namespace: When the point was inserted with a namespace, pass it
+                here for correct lookup.
 
         Returns:
             PointDetail with id, vector, metadata, and created_at.
@@ -680,10 +707,10 @@ class VectorDBClient:
         Raises:
             CollectionNotFoundError: If collection doesn't exist
         """
-        response = await self._request(
-            "GET",
-            f"/api/v1/collections/{collection}/points/{point_id}",
-        )
+        url = f"/api/v1/collections/{collection}/points/{point_id}"
+        if namespace is not None:
+            url = f"{url}?namespace={quote(namespace, safe='')}"
+        response = await self._request("GET", url)
         data = await response.json()
         return PointDetail.from_dict(data)
 
